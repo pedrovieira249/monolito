@@ -1,7 +1,4 @@
-import InvoiceItems from "../../domain/invoice-items.entity";
 import Invoice from "../../domain/invoice.entity";
-import Address from "../../../@shared/domain/value-object/address.value-object";
-import Id from "../../../@shared/domain/value-object/id.value-object";
 import InvoiceGateway from "../../gateway/invoice.gateway";
 import GenerateInvoiceUseCase from "./generate-invoice.usecase";
 

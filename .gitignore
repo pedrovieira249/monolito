@@ -1,0 +1,6 @@
+node_modules
+.vscode
+.swc
+dist
+.github
+.vscode

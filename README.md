@@ -195,9 +195,12 @@ Cadastra um novo produto no sistema. Este produto ficará disponível para compr
     "name": "Notebook",
     "description": "Notebook com 16GB de RAM",
     "purchasePrice": 3000,
+    "salesPrice": 3500,
     "stock": 10
 }
 ```
+
+> `purchasePrice` é o custo de aquisição do produto. `salesPrice` é o preço cobrado do cliente no checkout.
 
 **Resposta 201:**
 ```json
@@ -206,8 +209,24 @@ Cadastra um novo produto no sistema. Este produto ficará disponível para compr
     "name": "Notebook",
     "description": "Notebook com 16GB de RAM",
     "purchasePrice": 3000,
+    "salesPrice": 3500,
     "stock": 10
 }
+```
+
+**Erros de validação (400):**
+
+| Campo | Condição de erro |
+|---|---|
+| `name` | Ausente ou não é texto |
+| `description` | Ausente ou não é texto |
+| `purchasePrice` | Ausente ou não é número maior que zero |
+| `salesPrice` | Ausente ou não é número maior que zero |
+| `stock` | Não é inteiro maior ou igual a zero |
+
+Exemplo de resposta 400:
+```json
+{ "error": "Campo 'salesPrice' é obrigatório e deve ser um número maior que zero." }
 ```
 
 ---
@@ -235,6 +254,19 @@ Cadastra um novo cliente que poderá realizar compras.
     "createdAt": "2026-03-24T10:00:00.000Z",
     "updatedAt": "2026-03-24T10:00:00.000Z"
 }
+```
+
+**Erros de validação (400):**
+
+| Campo | Condição de erro |
+|---|---|
+| `name` | Ausente ou não é texto |
+| `email` | Ausente, não é texto ou formato inválido |
+| `address` | Ausente ou não é texto |
+
+Exemplo de resposta 400:
+```json
+{ "error": "Campo 'email' é obrigatório e deve ser um e-mail válido." }
 ```
 
 ---
@@ -268,7 +300,7 @@ Executa o fluxo completo de uma compra: valida cliente, verifica estoque, proces
 }
 ```
 
-**Resposta 200 — Pagamento recusado (total < R$ 100):**
+**Resposta 200 — Pagamento pendente (total < R$ 100):**
 ```json
 {
     "id": "ordem-uuid",
@@ -278,6 +310,27 @@ Executa o fluxo completo de uma compra: valida cliente, verifica estoque, proces
     "status": "pending",
     "products": [...]
 }
+```
+
+> Quando o total é menor que R$ 100,00, o pagamento fica com status `"pending"` e **nenhuma nota fiscal é gerada** (`invoiceId: null`).
+
+**Erros de validação (400):**
+
+| Campo | Condição de erro |
+|---|---|
+| `clientId` | Ausente ou não é texto |
+| `products` | Ausente, não é array ou array vazio |
+| `products[].productId` | Ausente ou não é texto em algum item |
+| `products[].quantity` | Ausente, não é inteiro ou valor menor ou igual a zero em algum item |
+
+Exemplo de resposta 400:
+```json
+{ "error": "Cada produto deve ter um 'quantity' inteiro maior que zero." }
+```
+
+**Erro de negócio (500):**
+```json
+{ "error": "Client not found" }
 ```
 
 ---
@@ -345,16 +398,27 @@ npm test -- --verbose
 
 Os testes E2E estão em `src/api/app.e2e.spec.ts` e cobrem todos os endpoints. Eles sobem o app Express em memória via **Supertest** — sem necessidade de iniciar o servidor manualmente.
 
-**Coberturas dos testes E2E:**
+**Coberturas dos testes E2E (17 testes):**
 
-| Endpoint | Cenário testado |
-|---|---|
-| `POST /products` | Cria produto e verifica status 201 + corpo da resposta |
-| `POST /clients` | Cria cliente e verifica status 201 + corpo da resposta |
-| `POST /checkout` | Compra aprovada (total >= 100) com status e invoiceId |
-| `POST /checkout` | Compra recusada (total < 100) com status `pending` e `invoiceId: null` |
-| `GET /invoice/:id` | Consulta nota fiscal gerada por checkout aprovado |
-| `GET /invoice/:id` | Retorna 404 para ID inexistente |
+| Endpoint | Cenário testado | Esperado |
+|---|---|---|
+| `POST /products` | Payload válido | 201 |
+| `POST /products` | Campo `name` ausente | 400 |
+| `POST /products` | `purchasePrice` negativo | 400 |
+| `POST /products` | Campo `salesPrice` ausente | 400 |
+| `POST /products` | `stock` com valor decimal | 400 |
+| `POST /clients` | Payload válido | 201 |
+| `POST /clients` | Campo `email` ausente | 400 |
+| `POST /clients` | Formato de e-mail inválido | 400 |
+| `POST /clients` | Campo `address` ausente | 400 |
+| `POST /checkout` | Compra aprovada (total >= 100) | 200, `status: "approved"` |
+| `POST /checkout` | Compra pendente (total < 100) | 200, `status: "pending"`, `invoiceId: null` |
+| `POST /checkout` | Campo `clientId` ausente | 400 |
+| `POST /checkout` | Array `products` vazio | 400 |
+| `POST /checkout` | `quantity` igual a zero | 400 |
+| `POST /checkout` | Cliente inexistente | 500 |
+| `GET /invoice/:id` | Invoice de compra aprovada | 200 |
+| `GET /invoice/:id` | ID inexistente | 404 |
 
 **Executar apenas os testes E2E:**
 

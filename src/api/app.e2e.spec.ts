@@ -6,7 +6,7 @@ import InvoiceItemsModel from "../modules/invoice/repository/invoice-items.model
 import TransactionModel from "../modules/payment/repository/transaction.model";
 import ProductAdmModel from "../modules/product-adm/repository/product.model";
 import StoreProductModel from "../modules/store-product/repository/product.model";
-import app from "./express";
+import app, { setSequelize } from "./express";
 
 describe("API E2E Tests", () => {
     let sequelize: Sequelize;
@@ -18,7 +18,6 @@ describe("API E2E Tests", () => {
             logging: false,
         });
 
-        // Registrar modelos sem conflito de tabela
         sequelize.addModels([
             ClientModel,
             InvoiceModel,
@@ -28,25 +27,25 @@ describe("API E2E Tests", () => {
 
         await sequelize.sync({ force: true });
 
-        // Criar tabela 'products' manualmente com todas as colunas necessárias
-        // para que tanto o módulo product-adm (purchasePrice) quanto
-        // o store-product (salesPrice) possam operar sobre a mesma tabela
+        // Tabela 'products' é compartilhada por product-adm (purchasePrice)
+        // e store-product (salesPrice). Criamos manualmente com todas as colunas.
         await sequelize.query(`
             CREATE TABLE IF NOT EXISTS products (
-                id         TEXT    NOT NULL PRIMARY KEY,
-                name       TEXT    NOT NULL,
-                description TEXT   NOT NULL,
-                purchasePrice REAL NOT NULL DEFAULT 0,
-                salesPrice    REAL NOT NULL DEFAULT 0,
-                stock      INTEGER NOT NULL DEFAULT 0,
-                createdAt  TEXT    NOT NULL,
-                updatedAt  TEXT    NOT NULL
+                id            TEXT    NOT NULL PRIMARY KEY,
+                name          TEXT    NOT NULL,
+                description   TEXT    NOT NULL,
+                purchasePrice REAL    NOT NULL DEFAULT 0,
+                salesPrice    REAL    NOT NULL DEFAULT 0,
+                stock         INTEGER NOT NULL DEFAULT 0,
+                createdAt     TEXT    NOT NULL,
+                updatedAt     TEXT    NOT NULL
             )
         `);
 
-        // Registrar os modelos de produto após a criação manual da tabela
-        // para que queries via Model.findOne() / Model.create() funcionem
         sequelize.addModels([ProductAdmModel, StoreProductModel]);
+
+        // Disponibiliza o sequelize para as rotas atualizarem salesPrice
+        setSequelize(sequelize);
     });
 
     afterAll(async () => {
@@ -69,6 +68,7 @@ describe("API E2E Tests", () => {
                 name: "Produto Teste",
                 description: "Descrição do produto",
                 purchasePrice: 50,
+                salesPrice: 80,
                 stock: 10,
             };
 
@@ -79,9 +79,56 @@ describe("API E2E Tests", () => {
                 name: body.name,
                 description: body.description,
                 purchasePrice: body.purchasePrice,
+                salesPrice: body.salesPrice,
                 stock: body.stock,
             });
             expect(res.body.id).toBeDefined();
+        });
+
+        it("should return 400 when name is missing", async () => {
+            const res = await request(app).post("/products").send({
+                description: "Desc",
+                purchasePrice: 50,
+                salesPrice: 80,
+                stock: 5,
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/name/i);
+        });
+
+        it("should return 400 when purchasePrice is negative", async () => {
+            const res = await request(app).post("/products").send({
+                name: "Prod",
+                description: "Desc",
+                purchasePrice: -1,
+                salesPrice: 80,
+                stock: 5,
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/purchasePrice/i);
+        });
+
+        it("should return 400 when salesPrice is missing", async () => {
+            const res = await request(app).post("/products").send({
+                name: "Prod",
+                description: "Desc",
+                purchasePrice: 50,
+                stock: 5,
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/salesPrice/i);
+        });
+
+        it("should return 400 when stock is a decimal number", async () => {
+            const res = await request(app).post("/products").send({
+                name: "Prod",
+                description: "Desc",
+                purchasePrice: 50,
+                salesPrice: 80,
+                stock: 1.5,
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/stock/i);
         });
     });
 
@@ -105,13 +152,40 @@ describe("API E2E Tests", () => {
             });
             expect(res.body.id).toBeDefined();
         });
+
+        it("should return 400 when email is missing", async () => {
+            const res = await request(app).post("/clients").send({
+                name: "Joao",
+                address: "Rua A",
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/email/i);
+        });
+
+        it("should return 400 when email is invalid", async () => {
+            const res = await request(app).post("/clients").send({
+                name: "Joao",
+                email: "nao-eh-email",
+                address: "Rua A",
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/email/i);
+        });
+
+        it("should return 400 when address is missing", async () => {
+            const res = await request(app).post("/clients").send({
+                name: "Joao",
+                email: "joao@mail.com",
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/address/i);
+        });
     });
 
     // ─── POST /checkout ──────────────────────────────────────────────────────────
 
     describe("POST /checkout", () => {
         it("should place an order and return 200 with approved status", async () => {
-            // Seed: cliente
             const clientRes = await request(app).post("/clients").send({
                 name: "Maria Teste",
                 email: "maria@teste.com",
@@ -119,14 +193,14 @@ describe("API E2E Tests", () => {
             });
             const clientId = clientRes.body.id;
 
-            // Seed: produto diretamente no banco para garantir salesPrice correto
-            // (produto-adm only sets purchasePrice; store-catalog reads salesPrice)
-            const productId = "product-e2e-1";
-            const now = new Date().toISOString();
-            await sequelize.query(`
-                INSERT INTO products (id, name, description, purchasePrice, salesPrice, stock, createdAt, updatedAt)
-                VALUES ('${productId}', 'Notebook', 'Notebook top', 200, 200, 50, '${now}', '${now}')
-            `);
+            const productRes = await request(app).post("/products").send({
+                name: "Notebook",
+                description: "Notebook top",
+                purchasePrice: 200,
+                salesPrice: 200,
+                stock: 50,
+            });
+            const productId = productRes.body.id;
 
             const body = {
                 clientId,
@@ -143,7 +217,7 @@ describe("API E2E Tests", () => {
             expect(res.body.products).toEqual(body.products);
         });
 
-        it("should decline order when total is below 100", async () => {
+        it("should return 200 with pending status when total is below 100", async () => {
             const clientRes = await request(app).post("/clients").send({
                 name: "Pedro Declínio",
                 email: "pedro@declinio.com",
@@ -151,12 +225,14 @@ describe("API E2E Tests", () => {
             });
             const clientId = clientRes.body.id;
 
-            const productId = "product-e2e-cheap";
-            const now = new Date().toISOString();
-            await sequelize.query(`
-                INSERT INTO products (id, name, description, purchasePrice, salesPrice, stock, createdAt, updatedAt)
-                VALUES ('${productId}', 'Caneta', 'Caneta azul', 10, 10, 100, '${now}', '${now}')
-            `);
+            const productRes = await request(app).post("/products").send({
+                name: "Caneta",
+                description: "Caneta azul",
+                purchasePrice: 5,
+                salesPrice: 10,
+                stock: 100,
+            });
+            const productId = productRes.body.id;
 
             const res = await request(app).post("/checkout").send({
                 clientId,
@@ -167,13 +243,47 @@ describe("API E2E Tests", () => {
             expect(res.body.status).toBe("pending");
             expect(res.body.invoiceId).toBeNull();
         });
+
+        it("should return 400 when clientId is missing", async () => {
+            const res = await request(app).post("/checkout").send({
+                products: [{ productId: "abc", quantity: 1 }],
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/clientId/i);
+        });
+
+        it("should return 400 when products array is empty", async () => {
+            const res = await request(app).post("/checkout").send({
+                clientId: "any-id",
+                products: [],
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/products/i);
+        });
+
+        it("should return 400 when product quantity is zero", async () => {
+            const res = await request(app).post("/checkout").send({
+                clientId: "any-id",
+                products: [{ productId: "abc", quantity: 0 }],
+            });
+            expect(res.status).toBe(400);
+            expect(res.body.error).toMatch(/quantity/i);
+        });
+
+        it("should return 500 when client does not exist", async () => {
+            const res = await request(app).post("/checkout").send({
+                clientId: "id-inexistente",
+                products: [{ productId: "abc", quantity: 1 }],
+            });
+            expect(res.status).toBe(500);
+            expect(res.body.error).toMatch(/client not found/i);
+        });
     });
 
     // ─── GET /invoice/:id ────────────────────────────────────────────────────────
 
     describe("GET /invoice/:id", () => {
         it("should return an invoice for an approved order", async () => {
-            // Seed: cliente
             const clientRes = await request(app).post("/clients").send({
                 name: "Ana Nota",
                 email: "ana@nota.com",
@@ -181,15 +291,15 @@ describe("API E2E Tests", () => {
             });
             const clientId = clientRes.body.id;
 
-            // Seed: produto com salesPrice >= 100
-            const productId = "product-invoice-e2e";
-            const now = new Date().toISOString();
-            await sequelize.query(`
-                INSERT INTO products (id, name, description, purchasePrice, salesPrice, stock, createdAt, updatedAt)
-                VALUES ('${productId}', 'Mouse', 'Mouse sem fio', 150, 150, 30, '${now}', '${now}')
-            `);
+            const productRes = await request(app).post("/products").send({
+                name: "Mouse",
+                description: "Mouse sem fio",
+                purchasePrice: 100,
+                salesPrice: 150,
+                stock: 30,
+            });
+            const productId = productRes.body.id;
 
-            // Realizar checkout para gerar invoice
             const checkoutRes = await request(app).post("/checkout").send({
                 clientId,
                 products: [{ productId, quantity: 1 }],
@@ -198,7 +308,6 @@ describe("API E2E Tests", () => {
             expect(checkoutRes.body.status).toBe("approved");
             const invoiceId = checkoutRes.body.invoiceId;
 
-            // Buscar invoice
             const invoiceRes = await request(app).get(`/invoice/${invoiceId}`);
 
             expect(invoiceRes.status).toBe(200);
@@ -215,3 +324,4 @@ describe("API E2E Tests", () => {
         });
     });
 });
+
